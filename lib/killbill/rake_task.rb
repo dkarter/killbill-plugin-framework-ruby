@@ -208,11 +208,12 @@ module Killbill
       end
 
       unless plugin_gem_file.file?
-        raise "Unable to find #{gem_name} in #{base}. Did you build it? (`rake build')"
+        @logger.warn "Unable to find gem for #{gem_name} - opportunistically defaulting to #{base}" unless base.nil?
+        base
+      else
+        @logger.debug "Found #{plugin_gem_file}"
+        plugin_gem_file.expand_path
       end
-
-      @logger.debug "Found #{plugin_gem_file}"
-      plugin_gem_file.expand_path
     end
 
     # Parse the existing Gemfile and Gemfile.lock files
@@ -241,10 +242,9 @@ module Killbill
       # (it will default to using Bundler::Source::Path references to the gemspecs on "install").
       specs.each do |spec|
         gem_path = valid_gem_path(spec)
+        gem_path ||= find_plugin_gem(spec)
         if gem_path.nil?
-          gem_path = find_plugin_gem(spec)
-          @logger.info "Staging #{spec.full_name} from #{gem_path}"
-          do_install_gem(gem_path, spec)
+          raise "Unable to find #{gem_name}"
         elsif gem_path.file?
           @logger.debug "Staging #{spec.name} (#{spec.version}) from #{gem_path}"
           do_install_gem(gem_path, spec)
