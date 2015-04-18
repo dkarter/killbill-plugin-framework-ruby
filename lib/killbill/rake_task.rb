@@ -26,6 +26,14 @@ module Killbill
       @verbose = verbose
 
       @logger = Logger.new(STDOUT)
+      @logger.formatter = proc do |severity, datetime, _, msg|
+        date_format = datetime.strftime('%Y-%m-%d %H:%M:%S.%L')
+        if severity == "INFO" || severity == "WARN"
+          "KillBill [#{date_format}] #{severity}  : #{msg}\n"
+        else
+          "KillBill [#{date_format}] #{severity} : #{msg}\n"
+        end
+      end
       @logger.level = @verbose ? Logger::DEBUG : Logger::INFO
 
       @base_name = base_name
@@ -138,6 +146,8 @@ module Killbill
       @gemfile_definition = find_gemfile
     end
 
+    def bundler?; !! @gemfile_definition end
+
     def print_dependencies
       puts "Gems to be staged:"
       specs.each { |spec| puts "  #{spec.name} (#{spec.version})" }
@@ -154,10 +164,11 @@ module Killbill
     # Parse the <plugin_name>.gemspec file
     def find_plugin_gemspec
       gemspecs = @plugin_name ? [File.join(@base, "#{@plugin_name}.gemspec")] : Dir[File.join(@base, "{,*}.gemspec")]
-      raise "Unable to find your plugin gemspec in #{@base}" unless gemspecs.size == 1
+      raise "Unable to find your plugin gemspec in #{@base}" if gemspecs.size == 0
+      raise "Found multiple plugin gemspec in #{@base} : #{gemspecs.inspect}" if gemspecs.size > 1
       spec_path = gemspecs.first
-      @logger.debug "Parsing #{spec_path}"
-      Bundler.load_gemspec(spec_path)
+      @logger.debug "Loading #{spec_path}"
+      Gem::Specification.load(spec_path)
     end
 
     def find_plugin_gem(spec)
@@ -229,27 +240,93 @@ module Killbill
       # We can't simply use Bundler::Installer unfortunately, because we can't tell it to copy the gems for cached ones
       # (it will default to using Bundler::Source::Path references to the gemspecs on "install").
       specs.each do |spec|
-        plugin_gem_file = Pathname.new(spec.cache_file).expand_path
-        if plugin_gem_file.file?
-          @logger.debug "Staging #{spec.name} (#{spec.version}) from #{plugin_gem_file}"
+        gem_path = valid_gem_path(spec)
+        if gem_path.nil?
+          gem_path = find_plugin_gem(spec)
+          @logger.info "Staging #{spec.full_name} from #{gem_path}"
+          do_install_gem(gem_path, spec)
+        elsif gem_path.file?
+          @logger.debug "Staging #{spec.name} (#{spec.version}) from #{gem_path}"
+          do_install_gem(gem_path, spec)
+        elsif gem_path.directory?
+          @logger.debug "Staging #{spec.name} (#{spec.version}) from #{gem_path}"
+          do_install_bundler(gem_path, spec)
         else
-          plugin_gem_file = find_plugin_gem(spec)
-          @logger.info "Staging custom gem #{spec.full_name} from #{plugin_gem_file}"
+          raise "#{spec.name} gem path #{gem_path.inspect} does not exist"
         end
-
-        do_install_gem(plugin_gem_file, spec.name, spec.version)
       end
     end
 
-    def do_install_gem(path, name, version)
-      gem_installer                       = Gem::Installer.new(path.to_s,
-                                                               {
-                                                                   :force       => true,
-                                                                   :install_dir => @target_dir,
-                                                                   # Should be redundant with the tweaks below
-                                                                   :development => false,
-                                                                   :wrappers    => true
-                                                               })
+    def valid_gem_path(spec)
+      cache_file = File.join(spec.cache_dir, "#{spec.full_name}.gem")
+      cache_path = Pathname.new(cache_file).expand_path
+      return cache_path if cache_path.file?
+      if spec.source && bundler? && spec.source.is_a?(Bundler::Source)
+        # Path < Source and Git < Path :
+        case spec.source
+        when Bundler::Source::Git
+          # NOTE cache_path only works with `bundle cache --all`
+          # when bundle cached install path points to cache
+          #  e.g. ./vendor/cache/killbill-plugin-framework-ruby-ce5e19f45bc9
+          # otherwise it's the path from under RG (as usual for Bundler)
+          #  e.g. [RVM]/gems/jruby-1.7.19@kb/bundler/gems/killbill-plugin-framework-ruby-ce5e19f45bc9
+          return spec.source.install_path
+        when Bundler::Source::Path
+          return nil if spec.name == name # it's the plugin gem itself
+          raise "gem #{spec.name}, :path => ... is not supported"
+        end
+      end
+      nil
+    end
+
+    def do_install_bundler(path, spec)
+      #full_gem_path = Pathname.new(spec.full_gem_path)
+
+      #gem_relative_path = full_gem_path.relative_path_from(Bundler.install_path)
+      #filenames = []; gem_relative_path.each_filename { |f| filenames << f }
+
+      #exclude_gems = true
+      #unless filenames.empty?
+      #  full_gem_path = Pathname.new(Bundler.install_path) + filenames.first
+      #  exclude_gems = false
+      #end
+
+      FileUtils.mkdir_p target_dir = File.join(@target_dir, "bundler/gems")
+
+      if spec.groups.include?(:killbill_excluded)
+        Dir.glob("#{path}/**/#{spec.name}.gemspec").each do |file|
+          gem_target_file = File.join(target_dir, File.basename(file))
+          FileUtils.rm(gem_target_file) if File.exist?(gem_target_file)
+          FileUtils.cp(file, target_dir) # gemspec only to avert Bundler error
+        end
+      else
+        gem_target_dir = File.join(target_dir, File.basename(path))
+        FileUtils.rm_r(gem_target_dir) if File.exist?(gem_target_dir)
+        FileUtils.cp_r(path, target_dir)
+        # the copied .git directory is not needed (might be large) :
+        git_target_dir = File.join(gem_target_dir, '.git')
+        FileUtils.rm_r(git_target_dir) if File.exist?(git_target_dir)
+      end
+    rescue => e
+      @logger.warn "Unable to stage #{spec.name} from #{path}: #{e}"
+      raise e
+    end
+
+    def do_install_gem(path, spec)
+      name, version = spec.name, spec.version
+      options = {
+          :force       => true,
+          :install_dir => @target_dir,
+          #:only_install_dir => true,
+          # Should be redundant with the tweaks below
+          :development => false,
+          :wrappers    => true
+      }
+      if Gem::Installer.respond_to?(:at)
+        gem_installer = Gem::Installer.at(path.to_s, options)
+      else # constructing an Installer object with a string is deprecated
+        gem_installer = Gem::Installer.new(path.to_s, options)
+      end
 
       # Tweak the spec file as there are a lot of things we don't care about
       gem_installer.spec.executables      = nil
