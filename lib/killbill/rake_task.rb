@@ -217,8 +217,13 @@ module Killbill
       end
 
       unless plugin_gem_file.file?
-        @logger.warn "Unable to find gem for #{gem_name} - opportunistically defaulting to #{base}" unless base.nil?
-        base
+        if spec.name == name
+          @logger.warn "Gem #{name} not built - try `rake build`"
+          nil
+        else
+          @logger.warn "Unable to find gem for #{gem_name} - opportunistically defaulting to #{base}" unless base.nil?
+          base
+        end
       else
         @logger.debug "Found #{plugin_gem_file}"
         plugin_gem_file.expand_path
