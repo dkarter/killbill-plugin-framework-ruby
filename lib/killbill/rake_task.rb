@@ -258,7 +258,7 @@ module Killbill
         gem_path = valid_gem_path(spec)
         gem_path ||= find_plugin_gem(spec)
         if gem_path.nil?
-          raise "Unable to find #{gem_name}"
+          raise "Unable to find #{spec.name}"
         elsif gem_path.file?
           @logger.debug "Staging #{spec.name} (#{spec.version}) from #{gem_path}"
           do_install_gem(gem_path, spec)
