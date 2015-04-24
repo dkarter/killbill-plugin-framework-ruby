@@ -93,6 +93,15 @@ module Killbill
         task :stage, [:verbose] => :validate do |t, args|
           set_verbosity(args)
 
+          # Cleanup files from a previous PackageTask invocation, as Rake is not smart
+          # enough to figure out when a rebuild is needed. We also cannot use the :clobber_package
+          # task as it will destroy our gem in pkg/
+          rm_rf package_task.package_dir_path
+          rm_f File.join(package_task.package_dir, package_task.tgz_file)
+          rm_f File.join(package_task.package_dir, package_task.tar_gz_file)
+          rm_f File.join(package_task.package_dir, package_task.tar_bz2_file)
+          rm_f File.join(package_task.package_dir, package_task.zip_file)
+
           stage_dependencies
           stage_extra_files
 
