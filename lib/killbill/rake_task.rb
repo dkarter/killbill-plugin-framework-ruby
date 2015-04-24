@@ -265,8 +265,6 @@ module Killbill
         gem_path = valid_gem_path(spec)
         if gem_path.nil?
           if bundler?
-            # first validate it's actually the plugin spec we're dealing with :
-            raise "missing gem path for spec: #{spec.inspect}" if spec.name != name
             # Gemfile very likely declares gemspec ... so we need to get that in
             # yet the current way (the plugin gem must be built first) we can
             # not simply copy spec.loaded_from into the package's root directory
